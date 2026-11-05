@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
-# Asentaa/päivittää stream-arkiston Pi:lle omalta koneelta käsin.
+# Installs or updates IceCatch on a remote machine (Raspberry Pi or another systemd host).
 #
-#   ./deploy.sh            asenna tai päivitä
-#   ./deploy.sh --siivoa   poista ensin kaikki kontit ja Docker Pi:ltä, sitten asenna
+#   ./deploy.sh            install or update
+#   ./deploy.sh --clean    DANGEROUS: first removes ALL containers, images, volumes and
+#                          Docker from the target (asks for confirmation), then installs
 #
-# Kohde on ssh-alias "pi" (vaihda: PI_HOST=jokumuu ./deploy.sh)
+# The target is the ssh alias "pi" (change: PI_HOST=other ./deploy.sh).
+# The target's time zone is set to this machine's zone (change: TZ_WANTED=Europe/Helsinki).
 set -euo pipefail
 cd "$(dirname "$0")"
 
 HOST="${PI_HOST:-pi}"
-TMP=/tmp/stream-arkisto-src
+TZ_WANTED="${TZ_WANTED:-$(timedatectl show -p Timezone --value 2>/dev/null || true)}"
+TMP=/tmp/icecatch-src
 
 echo "→ Kopioidaan lähdekoodi koneelle $HOST"
 tar czf - --exclude='./data' --exclude='__pycache__' --exclude='.git' \
-    arkisto static scripts deploy README.md \
+    icecatch static scripts deploy README.md LICENSE \
   | ssh "$HOST" "rm -rf $TMP && mkdir -p $TMP && tar xzf - -C $TMP"
 
-if [[ "${1:-}" == "--siivoa" ]]; then
-    echo "→ Valmistellaan Pi (kontit ja Docker pois)"
-    ssh -t "$HOST" "sudo bash $TMP/scripts/valmistele-pi.sh"
+if [[ "${1:-}" == "--clean" ]]; then
+    echo "→ Valmistellaan kohde (kontit ja Docker pois)"
+    ssh -t "$HOST" "sudo bash $TMP/scripts/prepare-pi.sh"
 fi
 
 echo "→ Asennetaan"
-ssh -t "$HOST" "sudo bash $TMP/scripts/install.sh"
+ssh -t "$HOST" "sudo env TZ_WANTED='$TZ_WANTED' bash $TMP/scripts/install.sh"

@@ -3,43 +3,64 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Stream-arkisto</title>
+<title>IceCatch</title>
+<meta name="description" content="IceCatch – Icecast Stream Recorder. Catch the stream. Keep the moment.">
+<script>
+  // Apply the saved theme before first paint to avoid a flash of the wrong theme
+  try { const t = JSON.parse(localStorage.getItem("theme")); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <link rel="stylesheet" href="/style.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23c2410c'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
 </head>
 <body>
 <header>
-  <div class="brand"><span class="logo"></span>Stream-arkisto</div>
+  <div class="brand" title="Catch the stream. Keep the moment.">
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><use href="/icon.svg#mark"/></svg>
+    <div><div class="name">IceCatch</div><div class="tagline">Catch the stream. Keep the moment.</div></div>
+  </div>
   <nav>
     <button data-tab="recordings" class="active">Tallenteet</button>
     <button data-tab="schedules">Aikataulut</button>
     <button data-tab="streams">Striimit</button>
     <button data-tab="status">Tila</button>
   </nav>
-  <div id="live" class="live" hidden></div>
+  <div class="hdr-end">
+    <div id="live" class="live" hidden></div>
+    <div id="offline" class="offline small" hidden title="Muutokset päivittyvät taas, kun yhteys palaa">Ei yhteyttä palvelimeen…</div>
+    <select id="theme" aria-label="Teema" title="Teema">
+      <option value="system">◐ Järjestelmä</option>
+      <option value="light">☀ Vaalea</option>
+      <option value="dark">☾ Tumma</option>
+    </select>
+  </div>
 </header>
 
 <main>
-  <!-- TALLENTEET -->
+  <!-- RECORDINGS -->
   <section id="tab-recordings" class="tab">
     <div class="toolbar">
-      <input id="f-q" type="search" placeholder="Hae otsikosta, kuvauksesta tai tageista…">
-      <select id="f-stream"><option value="">Kaikki striimit</option></select>
-      <select id="f-status">
-        <option value="">Kaikki tilat</option>
-        <option value="ready">Valmis</option>
-        <option value="recording">Tallentaa</option>
-        <option value="processing">Käsitellään</option>
-        <option value="empty">Tyhjä</option>
-        <option value="failed">Virhe</option>
+      <select id="f-sort" aria-label="Järjestys">
+        <option value="newest">Uusin ensin</option>
+        <option value="oldest">Vanhin ensin</option>
       </select>
+      <select id="f-stream" aria-label="Lähde"><option value="">Kaikki lähteet</option></select>
+      <label class="fav-filter"><input id="f-keep" type="checkbox"> ★ Suosikit</label>
+      <button id="f-clear" type="button" class="ghost" hidden>Tyhjennä suodattimet</button>
     </div>
-    <div id="rec-summary" class="muted small"></div>
+    <div class="rec-head">
+      <label class="select-all small" id="select-all-wrap" hidden><input id="f-all" type="checkbox"> Valitse kaikki näkyvät</label>
+      <div id="rec-summary" class="muted small"></div>
+    </div>
+    <div id="rec-bulk" class="bulk" hidden>
+      <span id="bulk-count"></span>
+      <button id="bulk-clear" type="button" class="ghost">Poista valinnat</button>
+      <button id="bulk-delete" type="button" class="danger">🗑 Poista valitut</button>
+    </div>
     <div id="rec-list" class="list"></div>
     <button id="rec-more" class="ghost wide" hidden>Näytä lisää</button>
   </section>
 
-  <!-- AIKATAULUT -->
+  <!-- SCHEDULES -->
   <section id="tab-schedules" class="tab" hidden>
     <div class="toolbar">
       <h2>Ajastetut tallennukset</h2>
@@ -48,7 +69,7 @@
     <div id="sch-list" class="list"></div>
   </section>
 
-  <!-- STRIIMIT -->
+  <!-- STREAMS -->
   <section id="tab-streams" class="tab" hidden>
     <div class="toolbar">
       <h2>Striimit</h2>
@@ -57,13 +78,13 @@
     <div id="str-list" class="list"></div>
   </section>
 
-  <!-- TILA -->
+  <!-- STATUS -->
   <section id="tab-status" class="tab" hidden>
     <div id="status-body"></div>
   </section>
 </main>
 
-<!-- Soitin -->
+<!-- Player -->
 <footer id="player" hidden>
   <div class="p-info">
     <div id="p-title" class="p-title"></div>
@@ -81,14 +102,14 @@
   </div>
 </footer>
 
-<!-- Dialogit -->
+<!-- Dialogs -->
 <dialog id="dlg-rec">
   <form method="dialog" id="form-rec">
     <h3>Muokkaa tallennetta</h3>
     <label>Otsikko<input name="title" required maxlength="300"></label>
     <label>Kuvaus<textarea name="description" rows="5"></textarea></label>
     <label>Tagit <span class="muted small">(pilkulla erotettuna)</span><input name="tags"></label>
-    <label class="check"><input type="checkbox" name="keep"> Suojattu (ei poisteta automaattisesti)</label>
+    <label class="check"><input type="checkbox" name="keep"> ★ Suosikki (säilytettävä)</label>
     <div class="meta muted small" id="rec-meta"></div>
     <menu><button value="cancel" formnovalidate class="ghost">Peruuta</button><button value="ok" class="primary">Tallenna</button></menu>
   </form>
@@ -129,11 +150,14 @@
     <div id="str-test-result" class="small"></div>
     <fieldset>
       <legend>Hiljaisuuden poisto</legend>
-      <div class="row">
-        <label>Poista yli (s)<input name="silence_min_s" type="number" min="0" max="600" step="0.5"></label>
-        <label>Kynnys (dB)<input name="silence_db" type="number" min="-90" max="-10" step="1"></label>
-      </div>
-      <p class="muted small">Hiljaisuudet, jotka ovat pidempiä kuin annettu aika, lyhennetään noin sekuntiin. 0 = ei poistoa.</p>
+      <label>Kynnys (dB)<input name="silence_db" type="number" min="-90" max="-10" step="1"></label>
+      <p class="muted small">Tallenteeseen jää vain jatkuva puhe tai musiikki. Pitkät hiljaiset kohdat poistetaan, myös jos niissä on yksittäisiä ääniä tai kynnystä hiljaisempaa taustahälyä. Nosta kynnystä, jos taustahäly jää tallenteeseen.</p>
+    </fieldset>
+    <fieldset>
+      <legend>Automaattinen tallennus</legend>
+      <label class="check"><input type="checkbox" name="auto_record"> Tallenna aina kun lähetys alkaa</label>
+      <label>Enimmäispituus (h)<input name="max_hours" type="number" min="0.25" max="168" step="0.25" required></label>
+      <p class="muted small">Tallennus päättyy, kun lähetys loppuu tai enimmäispituus täyttyy. Sen jälkeen uusi tallennus alkaa vasta seuraavasta lähetyksestä.</p>
     </fieldset>
     <label class="check"><input type="checkbox" name="enabled"> Käytössä</label>
     <menu><button value="cancel" formnovalidate class="ghost">Peruuta</button><button value="ok" class="primary">Tallenna</button></menu>

@@ -1,14 +1,14 @@
 "use strict";
-// Stream-arkisto – web-käyttöliittymä (ei riippuvuuksia)
+// IceCatch – web UI (no dependencies). UI texts are Finnish.
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const DAYS = ["Ma", "Ti", "Ke", "To", "Pe", "La", "Su"];
-const STATUS = { ready: "Valmis", recording: "Tallentaa", processing: "Käsitellään", empty: "Tyhjä", failed: "Virhe" };
 
-const state = { streams: [], recs: [], recTotal: 0, playing: null, activeIds: new Set() };
+const state = { streams: [], recs: [], recTotal: 0, playing: null, selected: new Set() };
+const PAGE = 50;
 
-// ------------------------------------------------------------ apurit
+// ------------------------------------------------------------ helpers
 async function api(path, opts = {}) {
   const res = await fetch("/api" + path, {
     method: opts.method || "GET",
@@ -54,7 +54,7 @@ function store(key, val) {
 }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
-// Avaa dialogin ja palauttaa lupauksen, joka ratkeaa kun käyttäjä tallentaa (true) tai peruu (false)
+// Opens a dialog; resolves to true when the user saves, false when they cancel
 function openDialog(dlg) {
   return new Promise(resolve => {
     dlg.returnValue = "";
@@ -63,7 +63,7 @@ function openDialog(dlg) {
   });
 }
 
-// ------------------------------------------------------------ välilehdet
+// ------------------------------------------------------------ tabs
 function showTab(name) {
   $$("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
   $$(".tab").forEach(s => (s.hidden = s.id !== "tab-" + name));
@@ -72,11 +72,11 @@ function showTab(name) {
 }
 $$("nav button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
 
-// ------------------------------------------------------------ striimit
+// ------------------------------------------------------------ streams
 async function fetchStreams() {
   state.streams = await api("/streams");
   const sel = $("#f-stream"), cur = sel.value;
-  sel.innerHTML = `<option value="">Kaikki striimit</option>` +
+  sel.innerHTML = `<option value="">Kaikki lähteet</option>` +
     state.streams.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
   sel.value = cur;
 }
@@ -94,7 +94,8 @@ async function loadStreams() {
         <div class="title">${esc(s.name)} ${s.enabled ? "" : '<span class="muted small">(pois käytöstä)</span>'}</div>
         <div class="sub"><span>${esc(s.url)}</span></div>
         <div class="sub"><span>${s.recording_count} tallennetta</span>
-          <span>Hiljaisuus: ${s.silence_min_s > 0 ? `yli ${String(s.silence_min_s).replace(".", ",")} s pois (${s.silence_db} dB)` : "ei poistoa"}</span></div>
+          ${s.auto_record ? `<span>Automaattinen, enintään ${dur(s.max_duration_min * 60)}</span>
+            ${s.enabled && s.on_air != null ? `<span class="${s.on_air ? "ok" : "muted"}">${s.on_air ? "Lähetys käynnissä" : "Ei lähetystä"}</span>` : ""}` : ""}</div>
       </div>
       <div class="actions">
         <button data-now="${s.id}" ${s.enabled ? "" : "disabled"}>● Tallenna nyt</button>
@@ -111,12 +112,15 @@ async function editStream(s) {
   const f = $("#form-str");
   $("#str-h").textContent = s ? "Muokkaa striimiä" : "Uusi striimi";
   f.name.value = s?.name ?? ""; f.url.value = s?.url ?? "";
-  f.silence_min_s.value = s?.silence_min_s ?? 3; f.silence_db.value = s?.silence_db ?? -50;
+  f.silence_db.value = s?.silence_db ?? -50;
   f.enabled.checked = s ? !!s.enabled : true;
+  f.auto_record.checked = s ? !!s.auto_record : true;
+  f.max_hours.value = s ? s.max_duration_min / 60 : 4;
   $("#str-test-result").textContent = "";
   if (!(await openDialog($("#dlg-str")))) return;
   const body = { name: f.name.value, url: f.url.value, enabled: f.enabled.checked,
-                 silence_min_s: f.silence_min_s.value, silence_db: f.silence_db.value };
+                 silence_db: f.silence_db.value,
+                 auto_record: f.auto_record.checked, max_duration_min: Math.round(f.max_hours.value * 60) };
   await guard(async () => {
     await api(s ? `/streams/${s.id}` : "/streams", { method: s ? "PUT" : "POST", body });
     toast("Striimi tallennettu"); loadStreams();
@@ -152,7 +156,7 @@ async function recordNow(s) {
   });
 }
 
-// ------------------------------------------------------------ aikataulut
+// ------------------------------------------------------------ schedules
 async function loadSchedules() {
   await guard(fetchStreams);
   const rows = await guard(() => api("/schedules")) || [];
@@ -219,31 +223,74 @@ async function deleteSchedule(r) {
 $("#sch-add").onclick = () => editSchedule(null);
 $("#str-add").onclick = () => editStream(null);
 
-// ------------------------------------------------------------ tallenteet
-function recQuery(offset = 0) {
-  const p = new URLSearchParams({ limit: 50, offset });
-  if ($("#f-q").value) p.set("q", $("#f-q").value);
+// ------------------------------------------------------------ recordings
+function recQuery(offset = 0, limit = PAGE) {
+  // Only finished recordings are listed; running ones are shown on the status tab.
+  const p = new URLSearchParams({ limit, offset, sort: $("#f-sort").value, status: "ready" });
   if ($("#f-stream").value) p.set("stream_id", $("#f-stream").value);
-  if ($("#f-status").value) p.set("status", $("#f-status").value);
+  if ($("#f-keep").checked) p.set("keep", "1");
   return "/recordings?" + p;
 }
 
-async function loadRecordings(append = false) {
+function hasFilters() {
+  return !!($("#f-stream").value || $("#f-keep").checked);
+}
+
+async function loadRecordings(append = false, limit = PAGE) {
   if (!append) await guard(fetchStreams);
-  const data = await guard(() => api(recQuery(append ? state.recs.length : 0)));
+  const data = await guard(() => api(recQuery(append ? state.recs.length : 0, limit)));
   if (!data) return;
   state.recs = append ? state.recs.concat(data.items) : data.items;
   state.recTotal = data.total;
+  // Selection covers visible rows only: filtering must not hide rows that would be deleted.
+  const selectable = new Set(state.recs.filter(canSelect).map(r => r.id));
+  state.selected = new Set([...state.selected].filter(id => selectable.has(id)));
   renderRecordings();
+}
+
+// Refresh: reload as many rows as are visible now, so the list and selection stay put
+const refreshRecordings = () => loadRecordings(false, Math.min(500, Math.max(PAGE, state.recs.length)));
+
+function canSelect(r) {
+  return !r.keep;
+}
+
+function renderBulk() {
+  const chosen = state.recs.filter(r => state.selected.has(r.id));
+  const bytes = chosen.reduce((sum, r) => sum + (r.file_size || 0), 0);
+  $("#rec-bulk").hidden = !chosen.length;
+  $("#bulk-count").textContent = `${chosen.length} valittu${bytes ? ` · ${size(bytes)}` : ""}`;
+  const selectable = state.recs.filter(canSelect);
+  const all = $("#f-all");
+  $("#select-all-wrap").hidden = !selectable.length;
+  all.checked = selectable.length > 0 && chosen.length === selectable.length;
+  all.indeterminate = chosen.length > 0 && chosen.length < selectable.length;
+  $$("#rec-list .card[data-id]").forEach(c => c.classList.toggle("selected", state.selected.has(+c.dataset.id)));
+}
+
+async function deleteSelected() {
+  const ids = [...state.selected];
+  if (!ids.length) return;
+  if (!confirm(`Poistetaanko ${ids.length} tallennetta?\nÄänitiedostot poistetaan pysyvästi.`)) return;
+  await guard(async () => {
+    const res = await api("/recordings/delete", { method: "POST", body: { ids } });
+    if (res.deleted.includes(state.playing)) closePlayer();
+    state.selected.clear();
+    const skipped = res.skipped.length ? `, ${res.skipped.length} ohitettu: ${res.skipped[0].reason}` : "";
+    toast(`Poistettu ${res.deleted.length}${skipped}`, res.skipped.length > 0);
+    await refreshRecordings();
+  });
 }
 
 function renderRecordings() {
   const el = $("#rec-list");
-  const filtered = $("#f-q").value || $("#f-stream").value || $("#f-status").value;
+  const filtered = hasFilters();
+  $("#f-clear").hidden = !filtered;
   $("#rec-summary").textContent = state.recTotal ? `${state.recTotal} tallennetta` : "";
   $("#rec-more").hidden = state.recs.length >= state.recTotal;
+  renderBulk();
   if (!state.recs.length) {
-    el.innerHTML = `<div class="empty-state">${filtered ? "Haulla ei löytynyt tallenteita." :
+    el.innerHTML = `<div class="empty-state">${filtered ? "Valinnoilla ei löytynyt tallenteita." :
       "Ei vielä tallenteita. Lisää striimi ja aikataulu, tai aloita tallennus heti Striimit-välilehdeltä."}</div>`;
     return;
   }
@@ -253,36 +300,45 @@ function renderRecordings() {
       ? ` <span title="Alkuperäinen ${dur(r.raw_duration_s)}">(−${dur(r.raw_duration_s - r.duration_s)} hiljaisuutta)</span>` : "";
     const tags = r.tags ? r.tags.split(",").map(t => `<span class="tag">${esc(t)}</span>`).join(" ") : "";
     let actions = "";
-    if (r.status === "recording") actions += `<button data-stop="${r.id}">■ Pysäytä</button>`;
-    if (r.status === "failed") actions += `<button data-reproc="${r.id}" title="Yritä käsittelyä uudelleen">↻</button>`;
+    actions += `<button class="icon fav ${r.keep ? "on" : ""}" data-fav="${r.id}" title="${r.keep ? "Poista suosikeista" : "Merkitse suosikiksi ja säilytettäväksi"}">${r.keep ? "★" : "☆"}</button>`;
     if (playable) actions += `<a href="/media/${r.id}?download=1"><button class="icon" title="Lataa">⬇</button></a>`;
     actions += `<button class="icon" data-edit="${r.id}" title="Muokkaa">✎</button>`;
-    if (r.status !== "recording") actions += `<button class="icon danger" data-del="${r.id}" title="Poista">🗑</button>`;
+    actions += `<button class="icon danger" data-del="${r.id}" title="Poista">🗑</button>`;
     return `
     <div class="card ${state.playing === r.id ? "playing" : ""}" data-id="${r.id}">
+      <input type="checkbox" class="sel" data-sel="${r.id}" aria-label="Valitse" ${state.selected.has(r.id) ? "checked" : ""}
+        ${canSelect(r) ? "" : `disabled title="★-tallenne on merkitty säilytettäväksi"`}>
       <button class="play" data-play="${r.id}" ${playable ? "" : "disabled"} title="Toista">${state.playing === r.id ? "❚❚" : "▶"}</button>
       <div class="main">
-        <div class="title">${r.keep ? '<span class="keep" title="Suojattu">★</span> ' : ""}${esc(r.title)}</div>
+        <div class="title">${esc(r.title)}</div>
         <div class="sub">
           <span>${esc(r.stream_name || "–")}</span><span>${fdate(r.started_at)}</span>
-          <span>${r.status === "recording" ? "päättyy " + fdate(r.planned_end, false).replace(/^.. /, "") : dur(r.duration_s) + saved}</span>
+          <span>${dur(r.duration_s) + saved}</span>
           ${r.file_size ? `<span>${size(r.file_size)}</span>` : ""}
-          ${r.status !== "ready" ? `<span class="badge ${r.status}">${STATUS[r.status] || r.status}</span>` : ""}
           ${tags}
         </div>
         ${r.description ? `<div class="desc">${esc(r.description)}</div>` : ""}
-        ${r.error && r.status !== "ready" ? `<div class="desc ${r.status === "failed" ? "bad" : ""}">${esc(r.error)}</div>` : ""}
       </div>
       <div class="actions">${actions}</div>
     </div>`;
   }).join("");
+  $$("[data-sel]", el).forEach(c => c.onchange = () => {
+    if (c.checked) state.selected.add(+c.dataset.sel); else state.selected.delete(+c.dataset.sel);
+    renderBulk();
+  });
+  renderBulk();
   $$("[data-play]", el).forEach(b => b.onclick = () => play(state.recs.find(r => r.id == b.dataset.play)));
   $$("[data-edit]", el).forEach(b => b.onclick = () => editRecording(state.recs.find(r => r.id == b.dataset.edit)));
   $$("[data-del]", el).forEach(b => b.onclick = () => deleteRecording(state.recs.find(r => r.id == b.dataset.del)));
-  $$("[data-stop]", el).forEach(b => b.onclick = () => stopRecording(+b.dataset.stop));
-  $$("[data-reproc]", el).forEach(b => b.onclick = () => guard(async () => {
-    await api(`/recordings/${b.dataset.reproc}/reprocess`, { method: "POST" }); toast("Käsittely jonossa"); loadRecordings();
-  }));
+  $$("[data-fav]", el).forEach(b => b.onclick = () => toggleFavorite(state.recs.find(r => r.id == b.dataset.fav)));
+}
+
+async function toggleFavorite(r) {
+  await guard(async () => {
+    Object.assign(r, await api(`/recordings/${r.id}`, { method: "PUT", body: { keep: !r.keep } }));
+    if (r.keep) state.selected.delete(r.id);
+    if ($("#f-keep").checked) refreshRecordings(); else renderRecordings();
+  });
 }
 
 async function editRecording(r) {
@@ -305,11 +361,13 @@ async function editRecording(r) {
 }
 
 async function deleteRecording(r) {
-  if (!confirm(`Poistetaanko tallenne "${r.title}"?\nÄänitiedosto poistetaan pysyvästi.`)) return;
+  const warning = r.keep ? "\n\n★ Tämä on merkitty säilytettäväksi." : "";
+  if (!confirm(`Poistetaanko tallenne "${r.title}"?\nÄänitiedosto poistetaan pysyvästi.${warning}`)) return;
   await guard(async () => {
     await api(`/recordings/${r.id}`, { method: "DELETE" });
     if (state.playing === r.id) closePlayer();
-    toast("Poistettu"); loadRecordings();
+    state.selected.delete(r.id);
+    toast("Poistettu"); refreshRecordings();
   });
 }
 
@@ -317,16 +375,27 @@ async function stopRecording(id) {
   if (!confirm("Pysäytetäänkö tallennus nyt? Tähän asti tallennettu osa säilyy.")) return;
   await guard(async () => {
     await api(`/recordings/${id}/stop`, { method: "POST" });
-    toast("Pysäytetään…"); setTimeout(() => { loadRecordings(); refreshLive(); }, 1500);
+    toast("Pysäytetään…");
   });
 }
 
-$("#f-q").addEventListener("input", debounce(() => loadRecordings(), 300));
-$("#f-stream").onchange = () => loadRecordings();
-$("#f-status").onchange = () => loadRecordings();
+["#f-stream", "#f-keep"].forEach(s => { $(s).onchange = () => loadRecordings(); });
+$("#f-sort").value = store("rec-sort") === "oldest" ? "oldest" : "newest";
+$("#f-sort").onchange = e => { store("rec-sort", e.target.value); loadRecordings(); };
+$("#f-clear").onclick = () => {
+  $("#f-stream").value = "";
+  $("#f-keep").checked = false;
+  loadRecordings();
+};
+$("#f-all").onchange = e => {
+  state.selected = new Set(e.target.checked ? state.recs.filter(canSelect).map(r => r.id) : []);
+  renderRecordings();
+};
+$("#bulk-clear").onclick = () => { state.selected.clear(); renderRecordings(); };
+$("#bulk-delete").onclick = deleteSelected;
 $("#rec-more").onclick = () => loadRecordings(true);
 
-// ------------------------------------------------------------ soitin
+// ------------------------------------------------------------ player
 const audio = $("#audio");
 
 function play(r) {
@@ -357,13 +426,14 @@ $("#p-fwd").onclick = () => (audio.currentTime = Math.min(audio.duration || 0, a
 $("#p-rate").onchange = e => (audio.playbackRate = +e.target.value);
 $("#p-close").onclick = closePlayer;
 
-// ------------------------------------------------------------ tila
+// ------------------------------------------------------------ status
 async function loadStatus() {
   const s = await guard(() => api("/status"));
   if (!s) return;
   const pct = Math.round((s.disk.used / s.disk.total) * 100);
   const c = s.counts;
   $("#status-body").innerHTML = `
+    ${s.disk.low ? `<p class="bad"><strong>Levytila on lopussa.</strong> Uudet tallennukset voivat jäädä tekemättä.</p>` : ""}
     <div class="grid">
       <div class="stat"><div class="l">Levytila vapaana</div><div class="v">${size(s.disk.free)}</div>
         <div class="bar"><div style="width:${pct}%"></div></div><div class="small muted" style="margin-top:6px">${pct} % käytössä · ${esc(s.disk.path)}</div></div>
@@ -379,36 +449,72 @@ async function loadStatus() {
       ${a.reconnects ? `<span class="bad">${a.reconnects} katkoa</span>` : ""}</div></div>
       <div class="actions"><button data-stop="${a.id}">■ Pysäytä</button></div></div>`).join("")
       : `<div class="empty-state">Ei käynnissä olevia tallennuksia</div>`}</div>
+    <div class="section-h">Automaattisesti tallennettavat</div>
+    <div class="list">${s.auto.length ? s.auto.map(a => `
+      <div class="card"><div class="main"><div class="title">${esc(a.name)}</div>
+      <div class="sub"><span class="${a.on_air ? "ok" : "muted"}">${a.on_air == null ? "Tarkistetaan…" : a.on_air ? (a.wait_offline ? "Lähetys käynnissä, odottaa seuraavaa lähetystä" : "Lähetys käynnissä") : "Ei lähetystä"}</span>
+      <span>enintään ${dur(a.max_duration_min * 60)}</span></div></div></div>`).join("")
+      : `<div class="empty-state">Yhtään striimiä ei tallenneta automaattisesti</div>`}</div>
     <div class="section-h">Seuraavat ajastetut</div>
     <div class="list">${s.upcoming.length ? s.upcoming.map(u => `
       <div class="card"><div class="main"><div class="title">${esc(u.title)}</div>
       <div class="sub"><span>${esc(u.stream_name)}</span><span>${fdate(u.start)}</span><span>${dur(u.duration_min * 60)}</span></div></div></div>`).join("")
       : `<div class="empty-state">Ei ajastettuja tallennuksia</div>`}</div>
-    <p class="small muted" style="margin-top:20px">Stream-arkisto ${esc(s.version)} · palvelimen aika ${fdate(s.now)}</p>`;
-  $$("[data-stop]", $("#status-body")).forEach(b => b.onclick = async () => { await stopRecording(+b.dataset.stop); setTimeout(loadStatus, 1600); });
+    <p class="small muted about">${esc(s.name)} ${esc(s.version)} · <em>Catch the stream. Keep the moment.</em> · palvelimen aika ${fdate(s.now)}</p>`;
+  $$("[data-stop]", $("#status-body")).forEach(b => b.onclick = () => stopRecording(+b.dataset.stop));
 }
 
-// ------------------------------------------------------------ live-ilmaisin ja päivitys
+// ------------------------------------------------------------ theme
+const THEMES = ["system", "light", "dark"];
+function applyTheme(t) {
+  if (t === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+}
+$("#theme").value = THEMES.includes(store("theme")) ? store("theme") : "system";
+$("#theme").onchange = e => { store("theme", e.target.value); applyTheme(e.target.value); };
+
+// ------------------------------------------------------------ live updates
+// The server sends "change" over Server-Sent Events whenever data or recorder state
+// changes; the visible tab is then reloaded. No page refresh is needed.
+const TABS = ["recordings", "schedules", "streams", "status"];
+const LOADERS = { recordings: () => refreshRecordings(), schedules: loadSchedules, streams: loadStreams, status: loadStatus };
+const currentTab = () => TABS.find(t => !$("#tab-" + t).hidden) || "recordings";
+
 async function refreshLive() {
   let s;
   try { s = await api("/status"); } catch { return; }
   const live = $("#live");
   live.hidden = !s.active.length;
   live.innerHTML = s.active.length ? `<span class="dot"></span> Tallentaa: ${s.active.map(a => esc(a.stream_name)).join(", ")}` : "";
-  // jos tallennusten tila muuttui, päivitä lista
-  const ids = new Set(s.active.map(a => a.id));
-  const changed = ids.size !== state.activeIds.size || [...ids].some(i => !state.activeIds.has(i)) || s.processing || s.queue;
-  state.activeIds = ids;
-  if (!$("#tab-recordings").hidden && (changed || state.recs.some(r => r.status === "processing" || r.status === "recording"))) {
-    loadRecordings();
-  }
-  if (!$("#tab-status").hidden) loadStatus();
 }
-setInterval(refreshLive, 8000);
 
-// ------------------------------------------------------------ käynnistys
-const TABS = ["recordings", "schedules", "streams", "status"];
+function refreshAll() {
+  refreshLive();
+  LOADERS[currentTab()]();
+}
+const refreshSoon = debounce(refreshAll, 250);
+
+function connectEvents() {
+  if (!window.EventSource) { setInterval(refreshAll, 10000); return; }
+  const es = new EventSource("/api/events");
+  let connectedBefore = false;
+  // "hello" arrives on every (re)connect: after a break, catch up on missed changes
+  es.addEventListener("hello", () => {
+    $("#offline").hidden = true;
+    if (connectedBefore) refreshSoon();
+    connectedBefore = true;
+  });
+  es.addEventListener("change", refreshSoon);
+  es.onerror = () => { $("#offline").hidden = false; };
+}
+
+// Disk usage and clocks change without events: refresh the status tab now and then
+setInterval(() => { if (!document.hidden && currentTab() === "status") loadStatus(); }, 15000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshSoon(); });
+
+// ------------------------------------------------------------ startup
 const tabFromHash = () => (TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "recordings");
 window.addEventListener("hashchange", () => showTab(tabFromHash()));
 showTab(tabFromHash());
 refreshLive();
+connectEvents();

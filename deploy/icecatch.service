@@ -1,0 +1,28 @@
+[Unit]
+Description=IceCatch – Icecast stream recorder
+Documentation=file:///opt/icecatch/README.md
+Wants=network-online.target time-sync.target
+After=network-online.target time-sync.target
+
+[Service]
+Type=simple
+User=icecatch
+Group=icecatch
+EnvironmentFile=/etc/icecatch.env
+WorkingDirectory=/opt/icecatch
+ExecStart=/usr/bin/python3 -m icecatch
+Restart=always
+RestartSec=5
+# The main process receives SIGTERM and closes its ffmpeg processes cleanly itself
+KillMode=mixed
+TimeoutStopSec=45
+# Hardening: the program may write only to its data directory. install.sh adds a data
+# directory located elsewhere with a drop-in file.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=-/var/lib/icecatch -/mnt -/media
+
+[Install]
+WantedBy=multi-user.target

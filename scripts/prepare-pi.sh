@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Valmistelee Pi:n pelkästään stream-arkiston käyttöön:
-#   - pysäyttää ja poistaa KAIKKI Docker/Podman-kontit, levykuvat ja volyymit
-#   - poistaa Dockerin/Podmanin kokonaan
-#   - näyttää lopuksi, mitä muita palveluita koneella vielä kuuntelee verkossa
-# Ajetaan Pi:llä root-oikeuksin (deploy.sh --siivoa tekee tämän).
+# Prepares a Raspberry Pi to be used for IceCatch only. DESTRUCTIVE:
+#   - stops and removes ALL Docker/Podman containers, images and volumes
+#   - removes Docker/Podman completely
+#   - finally lists other services still listening on the network
+# Run on the Pi as root (deploy.sh --clean does this). Asks before removing anything,
+# unless ASSUME_YES=1. Messages are in Finnish.
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then echo "Aja root-oikeuksin (sudo)"; exit 1; fi
@@ -37,7 +38,7 @@ remove_engine() {   # $1 = docker | podman
     if [[ -n "$pkgs" ]]; then
         DEBIAN_FRONTEND=noninteractive apt-get purge -y $pkgs
     fi
-    # snap-asennus
+    # snap install
     if command -v snap >/dev/null 2>&1 && snap list docker >/dev/null 2>&1; then snap remove --purge docker; fi
     rm -rf /var/lib/docker /var/lib/containerd /etc/docker /var/lib/containers 2>/dev/null || true
     rm -f /etc/apt/sources.list.d/docker*.list
