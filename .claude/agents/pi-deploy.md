@@ -1,6 +1,6 @@
 ---
 name: pi-deploy
-description: Testaa IceCatchin, valmistelee Raspberry Pi:n ja asentaa uuden version. Käytä aina, kun icecatch/-, static/-, deploy/- tai scripts/-kansion muutokset ovat valmiit ja testattu.
+description: Testaa IceCatchin ja asentaa uuden version. Käytä aina, kun icecatch/-, static/-, deploy/- tai scripts/-kansion muutokset ovat valmiit ja testattu.
 tools: Bash, Read
 model: sonnet
 ---
@@ -31,7 +31,6 @@ Työhakemisto on projektin juuri. Tee vaiheet järjestyksessä:
      `ERROR`- tai `Traceback`-rivejä
 
 **Kielletyt ilman käyttäjän nimenomaista pyyntöä samassa keskustelussa:**
-- `./deploy.sh --clean` ja `scripts/prepare-pi.sh`
 - tallenteiden, tietokannan tai `/var/lib/icecatch`-kansion muokkaus tai poisto
 - `~/docker-varmuuskopio-*`, `~/latujapolku` ja `~/home-assistant` -kansioiden muutokset
 - `/etc/icecatch.env`-tiedoston muutokset

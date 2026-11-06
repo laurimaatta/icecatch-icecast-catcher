@@ -115,7 +115,7 @@ Koodi on englanniksi ja käyttöliittymä suomeksi.
 icecatch/     ohjelma: server.py (HTTP + API), recorder.py (tallennus ja ajastus),
               processing.py (hiljaisuuden poisto, koodaus), detect.py, db.py, events.py
 static/       käyttöliittymä (HTML, CSS, JS)
-scripts/      install.sh, prepare-pi.sh (tyhjentää Pi:n konteista, kysyy ensin)
+scripts/      install.sh (asennus ja päivitys)
 deploy/       systemd-palvelu ja asetuspohja
 deploy.sh     asennus toiselle koneelle ssh:lla
 tests/        testit
