@@ -399,12 +399,15 @@ class Manager:
         })
         shutil.rmtree(wd, ignore_errors=True)
         log.info("Recording %s ready: %.0f s -> %.0f s", rec_id, raw, dur)
-        if r["source"] == "auto" and dur < config.AUTO_DISCARD_S:
-            # Nothing but silence. If the mount stays up all the time, the next event may
-            # begin at any moment, so the next recording may start right away.
-            log.info("Automatic recording %s had no audio, deleting", rec_id)
+        if status == "empty":
+            # Too little audio to be worth keeping; empty recordings are never listed.
+            log.info("Recording %s had almost no audio, deleting", rec_id)
+            if r["schedule_id"]:
+                self.skip_occurrence(r["schedule_id"], r["scheduled_start"])
             delete_recording(rec_id)
-            if r["stream_id"]:
+            if r["source"] == "auto" and dur < config.AUTO_DISCARD_S and r["stream_id"]:
+                # Nothing but silence. If the mount stays up all the time, the next event
+                # may begin at any moment, so the next recording may start right away.
                 db.update("streams", r["stream_id"], {"wait_offline": 0})
 
     def skip_occurrence(self, schedule_id, scheduled_start):
@@ -476,6 +479,13 @@ class Manager:
         if any(k not in watched for k in self.on_air):
             self.on_air = {k: v for k, v in self.on_air.items() if k in watched}
             events.notify()
+        # Automatic recording was switched off (or the stream removed): stop its recording
+        with self.lock:
+            orphans = [j for j in self.jobs.values() if j.auto and j.stream_id not in watched]
+        for j in orphans:
+            if not j.stop_event.is_set():
+                log.info("Recording %s: automatic recording switched off, stopping", j.rec_id)
+                j.request_stop()
         for s in rows:
             if s["id"] in self.recording_stream_ids():
                 self._set_on_air(s["id"], True)
@@ -503,7 +513,15 @@ class Manager:
 
     # ---------- cleanup ----------
     def cleanup(self):
-        """Deletes recordings past their schedule's retention time (except favourites)."""
+        """Deletes recordings past their schedule's retention time (except favourites),
+        failed recordings after FAILED_KEEP_DAYS and leftover empty ones."""
+        cutoff = (datetime.now() - timedelta(days=config.FAILED_KEEP_DAYS)).isoformat(timespec="seconds")
+        junk = db.query("SELECT id FROM recordings WHERE status = 'empty' "
+                        "OR (status = 'failed' AND started_at < ?)", (cutoff,))
+        for r in junk:
+            delete_recording(r["id"])
+        if junk:
+            log.info("Cleanup: deleted %d failed or empty recordings", len(junk))
         rows = db.query(
             "SELECT r.id, r.started_at, sc.keep_days FROM recordings r "
             "JOIN schedules sc ON sc.id = r.schedule_id "

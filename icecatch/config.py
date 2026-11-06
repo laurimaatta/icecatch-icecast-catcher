@@ -36,6 +36,7 @@ EMPTY_THRESHOLD_S = float(_env("EMPTY_THRESHOLD", "30"))
 # Automatic recording when a broadcast starts
 AUTO_POLL_S = float(_env("AUTO_POLL_S", "15"))    # how often streams are checked
 AUTO_GRACE_S = float(_env("AUTO_GRACE_S", "180"))  # an outage this long ends the broadcast
+FAILED_KEEP_DAYS = 7  # failed recordings stay visible in the status view this long
 AUTO_DISCARD_S = 5  # an automatic recording with less audio than this is discarded
 DEFAULT_MAX_DURATION_MIN = int(_env("MAX_DURATION_MIN", "240"))  # max length for new streams
 

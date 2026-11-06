@@ -540,9 +540,34 @@ class SilentRecordings(Base):
         self.assertIsNone(db.one("SELECT id FROM recordings WHERE id=?", (rid,)))
         self.assertEqual(db.one("SELECT wait_offline w FROM streams WHERE id=?", (sid,))["w"], 0)
 
-    def test_short_real_audio_is_kept(self):
+    def test_short_audio_is_discarded_but_broadcast_not_rerecorded(self):
         sid, rid = self._process(20.0)
-        self.assertEqual(db.one("SELECT status FROM recordings WHERE id=?", (rid,))["status"], "empty")
+        self.assertIsNone(db.one("SELECT id FROM recordings WHERE id=?", (rid,)))
+        self.assertEqual(db.one("SELECT wait_offline w FROM streams WHERE id=?", (sid,))["w"], 1)
+
+
+class AutoSwitchedOff(Base):
+    def test_running_auto_recording_stops_when_auto_disabled(self):
+        sid = db.execute("INSERT INTO streams (name,url,auto_record,created_at) VALUES ('a','http://x',0,?)",
+                         (db.now_iso(),))
+        m = recorder.Manager()
+        auto, manual = mock.Mock(auto=True, stream_id=sid, rec_id=1), mock.Mock(auto=False, stream_id=sid, rec_id=2)
+        auto.stop_event.is_set.return_value = False
+        m.jobs = {1: auto, 2: manual}
+        m._watch_streams()
+        auto.request_stop.assert_called_once()
+        manual.request_stop.assert_not_called()
+
+
+class Cleanup(Base):
+    def test_old_failed_and_empty_removed_recent_failed_kept(self):
+        ins = lambda st, at: db.execute("INSERT INTO recordings (title,started_at,status,created_at) "
+                                        "VALUES ('t',?,?,?)", (at, st, db.now_iso()))
+        old = (datetime.now() - timedelta(days=8)).isoformat(timespec="seconds")
+        ins("failed", old), ins("empty", db.now_iso())
+        keep = [ins("failed", db.now_iso()), ins("ready", old)]
+        recorder.Manager().cleanup()
+        self.assertEqual([r["id"] for r in db.query("SELECT id FROM recordings ORDER BY id")], keep)
 
 
 class Favorites(HttpCase):

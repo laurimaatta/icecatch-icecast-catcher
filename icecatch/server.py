@@ -177,7 +177,7 @@ def upcoming(limit):
 
 @route("GET", r"/api/streams")
 def streams_list(h, q, body):
-    rows = db.query("SELECT s.*, (SELECT COUNT(*) FROM recordings r WHERE r.stream_id = s.id) AS recording_count "
+    rows = db.query("SELECT s.*, (SELECT COUNT(*) FROM recordings r WHERE r.stream_id = s.id AND r.status = 'ready') AS recording_count "
                     "FROM streams s ORDER BY s.name")
     on_air = h.server.manager.on_air
     return [{**r, "on_air": on_air.get(r["id"])} for r in rows]

@@ -114,7 +114,7 @@ async function editStream(s) {
   f.name.value = s?.name ?? ""; f.url.value = s?.url ?? "";
   f.silence_db.value = s?.silence_db ?? -50;
   f.enabled.checked = s ? !!s.enabled : true;
-  f.auto_record.checked = s ? !!s.auto_record : true;
+  f.auto_record.checked = s ? !!s.auto_record : false;
   f.max_hours.value = s ? s.max_duration_min / 60 : 4;
   $("#str-test-result").textContent = "";
   if (!(await openDialog($("#dlg-str")))) return;
@@ -437,7 +437,7 @@ async function loadStatus() {
     <div class="grid">
       <div class="stat"><div class="l">Levytila vapaana</div><div class="v">${size(s.disk.free)}</div>
         <div class="bar"><div style="width:${pct}%"></div></div><div class="small muted" style="margin-top:6px">${pct} % käytössä · ${esc(s.disk.path)}</div></div>
-      <div class="stat"><div class="l">Arkisto</div><div class="v">${(c.ready || 0) + (c.empty || 0)} tallennetta</div>
+      <div class="stat"><div class="l">Arkisto</div><div class="v">${c.ready || 0} tallennetta</div>
         <div class="small muted">${size(s.archive_bytes)} · ${dur(s.archive_seconds)}</div></div>
       <div class="stat"><div class="l">Käsittely</div><div class="v">${s.processing ? "Käynnissä" : "Vapaa"}</div>
         <div class="small muted">${s.queue} jonossa${c.failed ? ` · <span class="bad">${c.failed} epäonnistunutta</span>` : ""}</div></div>
