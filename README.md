@@ -1,4 +1,5 @@
 # IceCatch
+<img width="729" height="568" alt="image" src="https://github.com/user-attachments/assets/d36b6c31-14a0-4961-81c1-8a68ea415326" />
 
 **Icecast Stream Recorder** · *Catch the stream. Keep the moment.*
 
