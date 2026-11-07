@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlparse
 
 from . import NAME, __version__, config, db, events
-from .recorder import NoSpace, delete_recording, slugify
+from .recorder import NoSpace, delete_recording, resolve_url, slugify
 
 log = logging.getLogger("icecatch.http")
 
@@ -180,7 +180,8 @@ def streams_list(h, q, body):
     rows = db.query("SELECT s.*, (SELECT COUNT(*) FROM recordings r WHERE r.stream_id = s.id AND r.status = 'ready') AS recording_count "
                     "FROM streams s ORDER BY s.name")
     on_air = h.server.manager.on_air
-    return [{**r, "on_air": on_air.get(r["id"])} for r in rows]
+    recording = h.server.manager.recording_stream_ids()
+    return [{**r, "on_air": on_air.get(r["id"]), "recording": r["id"] in recording} for r in rows]
 
 
 def _stream_fields(body):
@@ -539,6 +540,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api(path, q)
             if path.startswith("/media/"):
                 return self._media(path, q)
+            if path.startswith("/live/"):
+                return self._live(path)
             return self._static(path)
         except ApiError as e:
             self._json(e.status, {"error": e.message})
@@ -580,6 +583,15 @@ class Handler(BaseHTTPRequestHandler):
         if ctype.startswith("text/") or ctype in ("application/javascript",):
             ctype += "; charset=utf-8"
         self._send(200, f.read_bytes(), ctype, {"Cache-Control": "no-cache"})
+
+    def _live(self, path):
+        """Live listening: the browser is sent to the stream itself, so the audio
+        does not pass through this machine."""
+        m = re.match(r"^/live/(\d+)$", path)
+        if not m:
+            raise ApiError(404, "Ei löydy")
+        s = _get("streams", int(m.group(1)))
+        self._send(302, headers={"Location": resolve_url(s["url"]), "Cache-Control": "no-store"})
 
     def _media(self, path, q):
         m = re.match(r"^/media/(\d+)", path)

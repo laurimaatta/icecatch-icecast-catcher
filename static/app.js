@@ -90,15 +90,18 @@ async function loadStreams() {
   }
   el.innerHTML = state.streams.map(s => `
     <div class="card ${s.enabled ? "" : "off"}">
+      ${s.enabled && s.on_air ? `<button class="play" data-play="live-${s.id}" data-live="${s.id}"
+        title="Kuuntele suoraa lähetystä">${state.playing === "live-" + s.id && !audio.paused ? "❚❚" : "▶"}</button>` : ""}
       <div class="main">
         <div class="title">${esc(s.name)} ${s.enabled ? "" : '<span class="muted small">(pois käytöstä)</span>'}</div>
         <div class="sub"><span>${esc(s.url)}</span></div>
         <div class="sub"><span>${s.recording_count} tallennetta</span>
-          ${s.auto_record ? `<span>Automaattinen, enintään ${dur(s.max_duration_min * 60)}</span>
-            ${s.enabled && s.on_air != null ? `<span class="${s.on_air ? "ok" : "muted"}">${s.on_air ? "Lähetys käynnissä" : "Ei lähetystä"}</span>` : ""}` : ""}</div>
+          ${s.auto_record ? `<span>Automaattinen, enintään ${dur(s.max_duration_min * 60)}</span>` : ""}
+          ${!s.enabled ? "" : s.recording ? `<span class="ok">● Tallennetaan</span>`
+            : s.on_air != null ? `<span class="${s.on_air ? "ok" : "muted"}">${s.on_air ? "Lähetys käynnissä" : "Ei lähetystä"}</span>` : ""}</div>
       </div>
       <div class="actions">
-        <button data-now="${s.id}" ${s.enabled ? "" : "disabled"}>● Tallenna nyt</button>
+        ${s.enabled && s.on_air && !s.recording ? `<button data-now="${s.id}">● Tallenna nyt</button>` : ""}
         <button class="icon" data-edit="${s.id}" title="Muokkaa">✎</button>
         <button class="icon danger" data-del="${s.id}" title="Poista">🗑</button>
       </div>
@@ -106,6 +109,7 @@ async function loadStreams() {
   $$("[data-edit]", el).forEach(b => b.onclick = () => editStream(state.streams.find(s => s.id == b.dataset.edit)));
   $$("[data-del]", el).forEach(b => b.onclick = () => deleteStream(state.streams.find(s => s.id == b.dataset.del)));
   $$("[data-now]", el).forEach(b => b.onclick = () => recordNow(state.streams.find(s => s.id == b.dataset.now)));
+  $$("[data-live]", el).forEach(b => b.onclick = () => playLive(state.streams.find(s => s.id == b.dataset.live)));
 }
 
 async function editStream(s) {
@@ -398,9 +402,36 @@ $("#rec-more").onclick = () => loadRecordings(true);
 // ------------------------------------------------------------ player
 const audio = $("#audio");
 
+const isLive = () => String(state.playing).startsWith("live-");
+function setLiveMode(live) {
+  ["#p-back", "#p-fwd", "#p-rate"].forEach(id => ($(id).hidden = live));
+}
+
+// Live broadcast: no seeking or position memory; pausing stops it, as the
+// buffered audio would fall behind the broadcast.
+function playLive(s) {
+  const key = "live-" + s.id;
+  if (state.playing === key) { closePlayer(); return; }
+  state.playing = key;
+  setLiveMode(true);
+  $("#player").hidden = false;
+  $("#p-title").textContent = s.name;
+  $("#p-sub").textContent = "Suora lähetys";
+  audio.playbackRate = 1;
+  audio.src = `/live/${s.id}`;
+  audio.play().catch(() => {});
+  renderRecordings();
+}
+audio.addEventListener("error", () => {
+  if (!isLive() || !audio.getAttribute("src")) return;
+  toast("Lähetystä ei voi kuunnella juuri nyt", true);
+  closePlayer();
+});
+
 function play(r) {
   if (state.playing === r.id) { audio.paused ? audio.play() : audio.pause(); return; }
   state.playing = r.id;
+  setLiveMode(false);
   $("#player").hidden = false;
   $("#p-title").textContent = r.title;
   $("#p-sub").textContent = `${r.stream_name || ""} · ${fdate(r.started_at)}`;
@@ -412,15 +443,21 @@ function play(r) {
   renderRecordings();
 }
 function closePlayer() {
+  $$(`[data-play="${state.playing}"]`).forEach(b => (b.textContent = "▶"));
   audio.pause(); audio.removeAttribute("src"); audio.load();
   state.playing = null; $("#player").hidden = true; renderRecordings();
 }
 audio.addEventListener("timeupdate", () => {
-  if (state.playing && Math.floor(audio.currentTime) % 5 === 0) store("pos-" + state.playing, audio.currentTime);
+  if (state.playing && !isLive() && Math.floor(audio.currentTime) % 5 === 0) store("pos-" + state.playing, audio.currentTime);
 });
-audio.addEventListener("ended", () => store("pos-" + state.playing, 0));
+audio.addEventListener("ended", () => {
+  if (isLive()) { toast("Lähetys päättyi"); closePlayer(); } else store("pos-" + state.playing, 0);
+});
 audio.addEventListener("play", () => $$(`[data-play="${state.playing}"]`).forEach(b => (b.textContent = "❚❚")));
-audio.addEventListener("pause", () => $$(`[data-play="${state.playing}"]`).forEach(b => (b.textContent = "▶")));
+audio.addEventListener("pause", () => {
+  if (isLive() && audio.getAttribute("src")) { closePlayer(); return; }  // the player's own pause button
+  $$(`[data-play="${state.playing}"]`).forEach(b => (b.textContent = "▶"));
+});
 $("#p-back").onclick = () => (audio.currentTime = Math.max(0, audio.currentTime - 30));
 $("#p-fwd").onclick = () => (audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 30));
 $("#p-rate").onchange = e => (audio.playbackRate = +e.target.value);

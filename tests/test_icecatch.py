@@ -237,6 +237,8 @@ class HttpCase(Base):
         super().setUp()
         self.mgr = mock.Mock(processing_now=None)
         self.mgr.active.return_value = {}
+        self.mgr.recording_stream_ids.return_value = set()
+        self.mgr.on_air = {}
         self.mgr.proc_queue.qsize.return_value = 0
         self.srv = server.Server(("127.0.0.1", 0), self.mgr)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
@@ -257,6 +259,17 @@ class HttpCase(Base):
 
 
 class Http(HttpCase):
+    def test_live_redirects_to_stream(self):
+        sid = db.execute("INSERT INTO streams (name,url,created_at) VALUES ('a','http://radio.example/x.mp3',?)",
+                         (db.now_iso(),))
+        c = http.client.HTTPConnection(self.host, timeout=10)
+        c.request("GET", f"/live/{sid}")
+        r = c.getresponse()
+        r.read()
+        c.close()
+        self.assertEqual((r.status, r.getheader("Location")), (302, "http://radio.example/x.mp3"))
+        self.assertEqual(self.req("GET", "/live/999")[0], 404)
+
     def test_non_ascii_password(self):
         with mock.patch.object(config, "AUTH_USER", "lauri"), mock.patch.object(config, "AUTH_PASS", "sääli"):
             self.assertEqual(self.req("GET", "/api/status")[0], 401)
@@ -419,10 +432,14 @@ class Watcher(Base):
         minutes = (datetime.fromisoformat(r["planned_end"]) - datetime.fromisoformat(r["started_at"])).total_seconds() / 60
         self.assertAlmostEqual(minutes, 120, delta=0.1)
 
-    def test_not_selected_stream_is_ignored(self):
+    def test_not_selected_stream_is_checked_but_not_recorded(self):
         db.update("streams", self.sid, {"auto_record": 0})
         self._poll(True)
         self.m._start_job.assert_not_called()
+        self.assertTrue(self.m.on_air[self.sid])  # the UI offers listening and "record now"
+        db.update("streams", self.sid, {"enabled": 0})
+        self._poll(True)
+        self.assertNotIn(self.sid, self.m.on_air)
 
     def test_active_recording_is_not_doubled(self):
         job = mock.Mock(stream_id=self.sid, end=datetime.now(), rate_kbps=128)

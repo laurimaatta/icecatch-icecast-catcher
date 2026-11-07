@@ -473,15 +473,18 @@ class Manager:
             self._stop.wait(config.AUTO_POLL_S)
 
     def _watch_streams(self):
-        """Starts recording the selected streams whose broadcast has begun."""
-        rows = db.query("SELECT * FROM streams WHERE auto_record = 1 AND enabled = 1")
-        watched = {s["id"] for s in rows}
-        if any(k not in watched for k in self.on_air):
-            self.on_air = {k: v for k, v in self.on_air.items() if k in watched}
+        """Checks which enabled streams are on the air (the UI offers listening and
+        recording only then) and starts recording the automatic ones whose broadcast
+        has begun. Automatic streams are checked first so a start is not delayed."""
+        rows = db.query("SELECT * FROM streams WHERE enabled = 1 ORDER BY auto_record DESC, id")
+        enabled = {s["id"] for s in rows}
+        auto = {s["id"] for s in rows if s["auto_record"]}
+        if any(k not in enabled for k in self.on_air):
+            self.on_air = {k: v for k, v in self.on_air.items() if k in enabled}
             events.notify()
         # Automatic recording was switched off (or the stream removed): stop its recording
         with self.lock:
-            orphans = [j for j in self.jobs.values() if j.auto and j.stream_id not in watched]
+            orphans = [j for j in self.jobs.values() if j.auto and j.stream_id not in auto]
         for j in orphans:
             if not j.stop_event.is_set():
                 log.info("Recording %s: automatic recording switched off, stopping", j.rec_id)
@@ -492,6 +495,8 @@ class Manager:
                 continue
             state = detect.check(resolve_url(s["url"]))
             self._set_on_air(s["id"], state.on_air)
+            if not s["auto_record"]:
+                continue
             if not state.on_air:
                 self._nospace_reported.discard(s["id"])
                 if s["wait_offline"]:
